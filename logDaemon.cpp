@@ -39,6 +39,7 @@ static const char CURL_SUCCESS_STR[] = "\"code\":\"0\"";
 static string gLogdir  = "./logs";
 static string gLogfile = "logfile";
 
+static long TIMER_INTERVAL=1*60*60;
 string gDeviceID = "ENV_XIAOMENG_DEVICEID_UNKNOWN";
 
 vector<string> logfileVect;
@@ -179,7 +180,7 @@ void timefunc(int sig)                      /* 定时事件代码 */
     fprintf(stderr, "ITIMER_REAL\n");//[%d]\n", n++);
     signal(ITIMER_REAL, timefunc);              /* 捕获定时信号 */
 }
-void makeTimer(long interval_sec){
+void setTimer(long interval_sec){
     struct itimerval value;
     value.it_value.tv_sec=1;
     value.it_value.tv_usec=0;
@@ -188,7 +189,14 @@ void makeTimer(long interval_sec){
     signal(SIGALRM, timefunc);
     setitimer(ITIMER_REAL, &value, NULL);   /* 定时开始 */
 }
-
+void cancelTimer(){
+    struct itimerval value;
+    value.it_value.tv_sec=0;
+    value.it_value.tv_usec=0;
+    value.it_interval.tv_sec=0;
+    value.it_interval.tv_usec=0;
+    setitimer(ITIMER_REAL, &value, NULL);   /* 定时开始 */
+}
 
 int renameAndPushVector(string logfile){
     string timetag = get_date();
@@ -347,11 +355,10 @@ int main(int argc, char* argv[])
         cout<<"log thread stopped"<<endl;
     });
 
-    makeTimer(30);
+    setTimer(TIMER_INTERVAL);
 
 	ofstream ofs(gLogdir+"/"+gLogfile, ofstream::out);
 
-	const long CHECK_CNT = 100;
 	long cnt = 0;
 	string word;
     cout<<"start to getline"<<endl;
@@ -377,6 +384,8 @@ int main(int argc, char* argv[])
 
 		}
 	}
+
+    cancelTimer();
     cout<<"No more data from stdin, quit log daemon"<<endl;
     {
         ofs.flush();
@@ -397,7 +406,5 @@ int main(int argc, char* argv[])
 		t.join();
     cout<<"thread join done"<<endl;
 
-
-    //cancel timer.
-	return 0;
+    return 0;
 }
