@@ -37,15 +37,20 @@ static const char TrackerServer_SUBADDR[] =    "/interflow/locker/tracker/report
 static const char CURL_SUCCESS_STR[] = "\"code\":\"0\"";
 
 static string gLogdir  = "./logs";
+static string gTmpdir  = "./logs_uploaded"; //TODO: temp save the files here, instead of deleting it.
 static string gLogfile = "logfile";
 
-static long TIMER_INTERVAL=1*60*60;
+static long gTimerInterval=1*60*60;
 string gDeviceID = "ENV_XIAOMENG_DEVICEID_UNKNOWN";
 
 vector<string> logfileVect;
 mutex  mtx;
 condition_variable cv;
 bool bExit = false;
+
+
+const string postfix_log = ".log";
+const string postfix_gz = ".log.gz";
 
 
 std::string get_date() {
@@ -106,15 +111,65 @@ string launch_cmd(const char* cmd){
 	return trim(result);
 }
 
-int uploadLogFile(const string& logfile){
-	string filename = logfile + ".gz";
-	//get gz file
-	string cmd = "gzip " + logfile;
-	int ret = system(cmd.c_str());
-	if (ret){
-		cout<<__FUNCTION__<<": fail to execute: " << cmd <<endl;
-		return ret;
-	}
+inline bool ends_with(std::string const & value, std::string const & ending)
+{
+    if (ending.size() > value.size()) return false;
+    return std::equal(ending.rbegin(), ending.rend(), value.rbegin());
+}
+
+int listDir(string dir, vector<string> &files)
+{
+    DIR *dp;
+    struct dirent *dirp;
+    if((dp  = opendir(dir.c_str())) == NULL) {
+        cout << "Error(" << errno << ") opening " << dir << endl;
+        return errno;
+    }
+
+    string fname;
+    while ((dirp = readdir(dp)) != NULL) {
+        switch (dirp->d_type) {
+                case DT_REG:
+                    fname = dirp->d_name;
+                    if (ends_with(fname, postfix_log) || ends_with(fname, postfix_gz) )
+                        files.push_back(move(fname));
+                    break;
+                case DT_DIR:
+                    break;
+                default:
+                    break;
+        }
+    }
+    closedir(dp);
+    return 0;
+}
+
+
+//input: logfile. the file name which will be compress/uploaded. without path, only name
+int gzipAndUploadLog(const string& logfile){
+    string srcfile; //tmp name, with full path
+	string filename; //compressed logfile, with full path, which will be uploaded to server
+    string tmpname; //tmp dir, with full path, the uploaded file will be moved to such path
+    string cmd;
+
+    
+    if (ends_with(logfile, postfix_log)){//do compress then upload
+        srcfile = gLogdir + "/" + logfile;
+        filename = gLogdir + "/" + logfile + ".gz";
+        tmpname = gTmpdir + "/" + logfile + ".gz";
+        //get gz file
+        cmd = "gzip " + srcfile;
+        int ret = system(cmd.c_str());
+        if (ret){
+            cout<<__FUNCTION__<<": fail to execute: " << cmd <<endl;
+            return ret;
+        }
+    }
+    else{//already/previously compressed log, upload directly
+        filename = gLogdir + "/" + logfile;
+        tmpname = gTmpdir + "/" + logfile;
+    }
+
 	//get md5
 	cmd = string("md5sum ") +  filename + " | awk '{print $1}'";
 	string md5 = launch_cmd(cmd.c_str());
@@ -160,11 +215,19 @@ int uploadLogFile(const string& logfile){
 	        //cout<<__FUNCTION__<<": success to execute: "<<cmd<<endl;
 	        cout<<__FUNCTION__<<": success to execute curl upload."<<endl;
             cout<<__FUNCTION__<<": delete uploaded file: "<<filename<<endl;
+            /*
             if( remove(filename.c_str()) != 0 ){
                 cout<<__FUNCTION__<<": fail to delete file :" <<filename<<endl;
             }
             else{
                 cout<<__FUNCTION__<<": success to delete file :" <<filename<<endl;
+            }
+            */
+            if( rename(filename.c_str(), tmpname.c_str()) != 0 ){
+                cout<<__FUNCTION__<<": fail to move file:" <<filename<<endl;
+            }
+            else{
+                cout<<__FUNCTION__<<": success to move file:" <<filename<<endl;
             }
         }
         else
@@ -233,44 +296,10 @@ int renameAndSignal(){
     return 0;
 }
 
-inline bool ends_with(std::string const & value, std::string const & ending)
-{
-    if (ending.size() > value.size()) return false;
-    return std::equal(ending.rbegin(), ending.rend(), value.rbegin());
-}
-
-int listDir(string dir, vector<string> &files)
-{
-    DIR *dp;
-    struct dirent *dirp;
-    if((dp  = opendir(dir.c_str())) == NULL) {
-        cout << "Error(" << errno << ") opening " << dir << endl;
-        return errno;
-    }
-
-    string fname;
-    const string postfix = ".log";
-    while ((dirp = readdir(dp)) != NULL) {
-        switch (dirp->d_type) {
-                case DT_REG:
-                    fname = dirp->d_name;
-                    if (ends_with(fname, postfix))
-                        files.push_back(move(fname));
-                    break;
-                case DT_DIR:
-                    break;
-                default:
-                    break;
-        }
-    }
-    closedir(dp);
-    return 0;
-}
-
 int main(int argc, char* argv[])
 {
     char ch;
-    while((ch = getopt(argc, argv, "f:d:")) != -1){
+    while((ch = getopt(argc, argv, "f:d:t:h")) != -1){
         printf("optind = %d, optopt = %d\n", optind, optopt);
         switch(ch){
             case 'd':
@@ -281,15 +310,30 @@ int main(int argc, char* argv[])
                 printf("optidx:%d, optkey:%c, outval:%s\n", optind, ch, optarg);
                 gLogfile = optarg;
                 break;
+            case 't':
+                printf("optidx:%d, optkey:%c, outval:%s\n", optind, ch, optarg);
+                gTimerInterval = atol(optarg);
+                break;
+            case 'h':
+                cout<<"-d dir: specify log dir"<<endl;
+                cout<<"-f logfile: specify log filename prefix"<<endl;
+                cout<<"-t time second: specify log upload interval"<<endl;
+                cout<<"-n deviceName: specify deviceID"<<endl;
+
             default:
                 break;
         }
     }
-    cout<<__FUNCTION__<<" use logdir name: " <<gLogdir<<endl;
-    cout<<__FUNCTION__<<" use logfile name: " <<gLogfile<<endl;
+    cout<<__FUNCTION__<<": logdir name = " <<gLogdir<<endl;
+    cout<<__FUNCTION__<<": logfile name = " <<gLogfile<<endl;
+    cout<<__FUNCTION__<<": timer interval = " <<gTimerInterval<<endl;
 
     string cmd = "mkdir -p ";
     cmd += gLogdir;
+    system(cmd.c_str());
+
+    cmd = "mkdir -p ";
+    cmd += gTmpdir;
     system(cmd.c_str());
 
 	//get deviceid
@@ -345,7 +389,7 @@ int main(int argc, char* argv[])
             cout<<" Number of files to upload: " << todoVect.size()<<endl;
             //upload all logs before exit
             for (auto s:todoVect){
-                uploadLogFile(gLogdir + "/" + s);
+                gzipAndUploadLog(s);
             }
             if (exitFlag){//could not use BExit here, to avoid race-condition, also we need handle the last saved logs.
                 cout<<"upload thread exit"<<endl;
@@ -355,7 +399,7 @@ int main(int argc, char* argv[])
         cout<<"log thread stopped"<<endl;
     });
 
-    setTimer(TIMER_INTERVAL);
+    setTimer(gTimerInterval);
 
 	ofstream ofs(gLogdir+"/"+gLogfile, ofstream::out);
 
